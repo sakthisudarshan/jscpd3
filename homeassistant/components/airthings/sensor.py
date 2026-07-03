@@ -16,6 +16,7 @@ from homeassistant.const import (
     EntityCategory,
     UnitOfDensity,
     UnitOfPressure,
+    UnitOfRadiationConcentration,
     UnitOfRatio,
     UnitOfSoundPressure,
     UnitOfTemperature,
@@ -33,8 +34,11 @@ from .coordinator import AirthingsDataUpdateCoordinator
 SENSORS: dict[str, SensorEntityDescription] = {
     "radonShortTermAvg": SensorEntityDescription(
         key="radonShortTermAvg",
-        native_unit_of_measurement="Bq/m³",
-        translation_key="radon",
+        device_class=SensorDeviceClass.RADON,
+        native_unit_of_measurement=(
+            UnitOfRadiationConcentration.BECQUEREL_PER_CUBIC_METER
+        ),
+        state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=0,
     ),
     "temp": SensorEntityDescription(
@@ -145,8 +149,8 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the Airthings sensor."""
-
     coordinator = entry.runtime_data
+
     entities = [
         AirthingsDeviceSensor(
             coordinator,
