@@ -24,7 +24,7 @@ from homeassistant.exceptions import (
     OAuth2TokenRequestError,
     OAuth2TokenRequestReauthError,
 )
-from homeassistant.helpers import frame, update_coordinator
+from homeassistant.helpers import frame, restore_state, update_coordinator
 from homeassistant.util.dt import utcnow
 
 from tests.common import MockConfigEntry, async_fire_time_changed, flush_store
@@ -1399,7 +1399,7 @@ async def set_stored_data(
 ) -> None:
     """Seed the restore coordinator store and load it, as bootstrap would."""
     bucket = entry.entry_id if entry else RESTORE_DOMAIN
-    hass_storage[update_coordinator.RESTORE_STORAGE_KEY] = {
+    hass_storage[restore_state.RESTORE_STORAGE_KEY] = {
         "version": 1,
         "data": {bucket: {RESTORE_KEY: data}},
     }
@@ -1408,7 +1408,7 @@ async def set_stored_data(
 
 def get_stored_data(hass_storage: dict[str, Any], entry: MockConfigEntry | None) -> Any:
     """Return the stored data of the coordinator under test."""
-    store_data = hass_storage[update_coordinator.RESTORE_STORAGE_KEY]["data"]
+    store_data = hass_storage[restore_state.RESTORE_STORAGE_KEY]["data"]
     bucket = entry.entry_id if entry else RESTORE_DOMAIN
     return store_data[bucket][RESTORE_KEY]
 
@@ -1556,7 +1556,7 @@ async def test_save_preserves_other_stored_data(
     crd.async_set_updated_data({"value": "pushed"})
     await flush_restore_store(hass)
 
-    assert hass_storage[update_coordinator.RESTORE_STORAGE_KEY]["data"] == {
+    assert hass_storage[restore_state.RESTORE_STORAGE_KEY]["data"] == {
         other_entry.entry_id: {RESTORE_KEY: {"value": "other"}},
         restore_entry.entry_id: {RESTORE_KEY: {"value": "pushed"}},
     }
@@ -1581,7 +1581,7 @@ async def test_save_delay_honored(
     )
     await crd.async_config_entry_first_refresh()
 
-    assert update_coordinator.RESTORE_STORAGE_KEY not in hass_storage
+    assert restore_state.RESTORE_STORAGE_KEY not in hass_storage
 
     freezer.tick(timedelta(seconds=30))
     async_fire_time_changed(hass)
@@ -1690,7 +1690,7 @@ async def test_coordinators_share_single_store(
     await crd3.async_config_entry_first_refresh()
     await flush_restore_store(hass)
 
-    assert hass_storage[update_coordinator.RESTORE_STORAGE_KEY]["data"] == {
+    assert hass_storage[restore_state.RESTORE_STORAGE_KEY]["data"] == {
         restore_entry.entry_id: {
             RESTORE_KEY: {"value": "first"},
             "other_key": {"value": "second"},
@@ -1713,7 +1713,7 @@ async def test_storage_removed_on_entry_removal(
     entry.add_to_hass(hass)
     other_entry.add_to_hass(hass)
 
-    hass_storage[update_coordinator.RESTORE_STORAGE_KEY] = {
+    hass_storage[restore_state.RESTORE_STORAGE_KEY] = {
         "version": 1,
         "data": {
             entry.entry_id: {RESTORE_KEY: {"value": "stored"}},
@@ -1726,7 +1726,7 @@ async def test_storage_removed_on_entry_removal(
     await hass.async_block_till_done()
     await flush_restore_store(hass)
 
-    assert hass_storage[update_coordinator.RESTORE_STORAGE_KEY]["data"] == {
+    assert hass_storage[restore_state.RESTORE_STORAGE_KEY]["data"] == {
         other_entry.entry_id: {RESTORE_KEY: {"value": "other"}}
     }
 
@@ -1765,7 +1765,7 @@ async def test_default_save_delay(
     crd.async_set_updated_data({"value": "pushed"})
     await hass.async_block_till_done()
 
-    assert update_coordinator.RESTORE_STORAGE_KEY not in hass_storage
+    assert restore_state.RESTORE_STORAGE_KEY not in hass_storage
 
     freezer.tick(timedelta(seconds=update_coordinator.RESTORE_SAVE_DELAY))
     async_fire_time_changed(hass)
@@ -1814,7 +1814,7 @@ async def test_save_does_not_outlive_entry_removal(
     async_fire_time_changed(hass)
     await hass.async_block_till_done()
 
-    store_data = hass_storage.get(update_coordinator.RESTORE_STORAGE_KEY, {})
+    store_data = hass_storage.get(restore_state.RESTORE_STORAGE_KEY, {})
     assert entry.entry_id not in store_data.get("data", {})
 
 
@@ -1835,7 +1835,7 @@ async def test_no_persist_initial_none(
 
     assert crd.data is None
     await flush_restore_store(hass)
-    assert update_coordinator.RESTORE_STORAGE_KEY not in hass_storage
+    assert restore_state.RESTORE_STORAGE_KEY not in hass_storage
 
 
 async def test_async_remove_stored_data_helper(
@@ -1849,7 +1849,7 @@ async def test_async_remove_stored_data_helper(
 
     crd.async_remove_stored_data()
     await flush_restore_store(hass)
-    assert hass_storage[update_coordinator.RESTORE_STORAGE_KEY]["data"] == {}
+    assert hass_storage[restore_state.RESTORE_STORAGE_KEY]["data"] == {}
 
     # Harmless to call again
     crd.async_remove_stored_data()
@@ -1914,7 +1914,7 @@ async def test_persist_without_config_entry(
     await crd.async_refresh()
     await flush_restore_store(hass)
 
-    assert hass_storage[update_coordinator.RESTORE_STORAGE_KEY]["data"] == {
+    assert hass_storage[restore_state.RESTORE_STORAGE_KEY]["data"] == {
         RESTORE_DOMAIN: {RESTORE_KEY: {"value": "fetched"}}
     }
 
@@ -1926,7 +1926,7 @@ async def test_entry_removal_keeps_data_without_config_entry(
     entry = MockConfigEntry()
     entry.add_to_hass(hass)
 
-    hass_storage[update_coordinator.RESTORE_STORAGE_KEY] = {
+    hass_storage[restore_state.RESTORE_STORAGE_KEY] = {
         "version": 1,
         "data": {
             entry.entry_id: {RESTORE_KEY: {"value": "entry"}},
@@ -1939,7 +1939,7 @@ async def test_entry_removal_keeps_data_without_config_entry(
     await hass.async_block_till_done()
     await flush_restore_store(hass)
 
-    assert hass_storage[update_coordinator.RESTORE_STORAGE_KEY]["data"] == {
+    assert hass_storage[restore_state.RESTORE_STORAGE_KEY]["data"] == {
         RESTORE_DOMAIN: {RESTORE_KEY: {"value": "no entry"}}
     }
 
@@ -1954,7 +1954,7 @@ async def test_remove_stored_data_without_config_entry(
 
     crd.async_remove_stored_data()
     await flush_restore_store(hass)
-    assert hass_storage[update_coordinator.RESTORE_STORAGE_KEY]["data"] == {}
+    assert hass_storage[restore_state.RESTORE_STORAGE_KEY]["data"] == {}
 
 
 async def test_no_config_entry_requires_domain(hass: HomeAssistant) -> None:
