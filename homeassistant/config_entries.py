@@ -55,6 +55,7 @@ from .helpers import (
     device_registry as dr,
     entity_registry as er,
     issue_registry as ir,
+    restore_state,
     storage,
 )
 from .helpers.debounce import Debouncer
@@ -2260,10 +2261,6 @@ class ConfigEntries:
     @callback
     def _async_clean_up(self, entry: ConfigEntry) -> None:
         """Clean up after an entry."""
-        # Import here to avoid a circular import; the update_coordinator helper
-        # imports config_entries.
-        from .helpers import update_coordinator  # noqa: PLC0415
-
         entry_id = entry.entry_id
 
         dev_reg = dr.async_get(self.hass)
@@ -2271,7 +2268,7 @@ class ConfigEntries:
 
         dev_reg.async_clear_config_entry(entry_id)
         ent_reg.async_clear_config_entry(entry_id)
-        update_coordinator.async_clear_config_entry(self.hass, entry_id)
+        restore_state.async_clear_config_entry(self.hass, entry_id)
 
         # If the configuration entry is removed during reauth, it should
         # abort any reauth flow that is active for the removed entry and
