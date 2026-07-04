@@ -345,7 +345,7 @@ class RestoreEntity(Entity):
         return None
 
 
-RESTORE_STORAGE_KEY = "update_coordinator.restore_data"
+RESTORE_STORAGE_KEY = "core.restore_state_update_coordinator"
 RESTORE_STORAGE_VERSION = 1
 
 
@@ -428,7 +428,7 @@ class _RestoreStoreManager:
 
 
 DATA_RESTORE_STORE: HassKey[_RestoreStoreManager] = HassKey(
-    "update_coordinator_restore_store"
+    "restore_state_update_coordinator"
 )
 
 
