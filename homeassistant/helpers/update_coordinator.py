@@ -171,6 +171,7 @@ class DataUpdateCoordinator(BaseDataUpdateCoordinatorProtocol, Generic[_DataT]):
         )
 
     @callback
+    @override
     def async_add_listener(
         self, update_callback: CALLBACK_TYPE, context: Any = None
     ) -> Callable[[], None]:
@@ -629,6 +630,7 @@ class TimestampDataUpdateCoordinator(DataUpdateCoordinator[_DataT]):
     last_update_success_time: datetime | None = None
 
     @callback
+    @override
     def _async_refresh_finished(self) -> None:
         """Handle when a refresh has finished."""
         super()._async_refresh_finished()
@@ -764,10 +766,12 @@ class BaseCoordinatorEntity[
         self.coordinator_context = context
 
     @cached_property
+    @override
     def should_poll(self) -> bool:
         """No need to poll. Coordinator notifies entity of updates."""
         return False
 
+    @override
     async def async_added_to_hass(self) -> None:
         """When entity is added to hass."""
         await super().async_added_to_hass()
@@ -809,10 +813,12 @@ class CoordinatorEntity[
         super().__init__(coordinator, context)
 
     @property
+    @override
     def available(self) -> bool:
         """Return if entity is available."""
         return self.coordinator.last_update_success
 
+    @override
     async def async_update(self) -> None:
         """Update the entity.
 
