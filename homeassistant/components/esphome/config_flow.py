@@ -4,7 +4,7 @@ from collections import OrderedDict
 from collections.abc import Mapping
 import json
 import logging
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from aioesphomeapi import (
     APIClient,
@@ -17,6 +17,7 @@ from aioesphomeapi import (
     wifi_mac_to_bluetooth_mac,
 )
 import aiohttp
+from home_assistant_bluetooth import BluetoothServiceInfo
 import voluptuous as vol
 
 from homeassistant.components import zeroconf
@@ -47,6 +48,8 @@ from homeassistant.util.json import json_loads_object
 
 from .const import (
     CONF_ALLOW_SERVICE_CALLS,
+    CONF_BLUETOOTH_MAC_ADDRESS_TYPE,
+    CONF_CONNECTION_TYPE,
     CONF_DEVICE_NAME,
     CONF_NOISE_PSK,
     CONF_SUBSCRIBE_LOGS,
@@ -58,7 +61,7 @@ from .const import (
 from .dashboard import async_get_or_create_dashboard_manager, async_set_dashboard_info
 from .encryption_key_storage import async_get_encryption_key_storage
 from .entry_data import ESPHomeConfigEntry
-from .manager import async_replace_device
+from .manager import BluetoothServiceInfoBleak, async_replace_device
 
 ERROR_REQUIRES_ENCRYPTION_KEY = "requires_encryption_key"
 ERROR_INVALID_ENCRYPTION_KEY = "invalid_psk"
@@ -82,6 +85,8 @@ class EsphomeFlowHandler(ConfigFlow, domain=DOMAIN):
         self._host: str | None = None
         self._connected_address: str | None = None
         self.__name: str | None = None
+        self._connection_type: Literal["ble", "tcp"] | None = None
+        self._ble_address_type: Literal["public", "random"] | None = None
         self._port: int | None = None
         self._password: str | None = None
         self._noise_required: bool | None = None
@@ -96,13 +101,26 @@ class EsphomeFlowHandler(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None, error: str | None = None
     ) -> ConfigFlowResult:
         if user_input is not None:
+            self._connection_type = user_input[CONF_CONNECTION_TYPE]
             self._host = user_input[CONF_HOST]
             self._port = user_input[CONF_PORT]
+            self._ble_address_type = user_input[CONF_BLUETOOTH_MAC_ADDRESS_TYPE]
             return await self._async_try_fetch_device_info()
 
         fields: dict[Any, type] = OrderedDict()
+        fields[
+            vol.Required(
+                CONF_CONNECTION_TYPE, default=self._connection_type or vol.UNDEFINED
+            )
+        ] = vol.In(["tcp", "ble"])
         fields[vol.Required(CONF_HOST, default=self._host or vol.UNDEFINED)] = str
         fields[vol.Optional(CONF_PORT, default=self._port or DEFAULT_PORT)] = int
+        fields[
+            vol.Required(
+                CONF_BLUETOOTH_MAC_ADDRESS_TYPE,
+                default=self._ble_address_type or vol.UNDEFINED,
+            )
+        ] = vol.In(["public", "random"])
 
         errors = {}
         if error is not None:
@@ -125,8 +143,12 @@ class EsphomeFlowHandler(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Handle a flow initialized by a reauth event."""
         self._reauth_entry = self._get_reauth_entry()
+        self._connection_type = entry_data.get(CONF_CONNECTION_TYPE, "tcp")
         self._host = entry_data[CONF_HOST]
         self._port = entry_data[CONF_PORT]
+        self._ble_address_type = entry_data.get(
+            CONF_BLUETOOTH_MAC_ADDRESS_TYPE, "public"
+        )
         self._password = entry_data[CONF_PASSWORD]
         self._device_name = entry_data.get(CONF_DEVICE_NAME)
         self._name = self._reauth_entry.title
@@ -211,8 +233,10 @@ class EsphomeFlowHandler(ConfigFlow, domain=DOMAIN):
         """Handle a flow initialized by a reconfig request."""
         self._reconfig_entry = self._get_reconfigure_entry()
         data = self._reconfig_entry.data
+        self._connection_type = data.get(CONF_CONNECTION_TYPE, "tcp")
         self._host = data[CONF_HOST]
         self._port = data.get(CONF_PORT, DEFAULT_PORT)
+        self._ble_address_type = data.get(CONF_BLUETOOTH_MAC_ADDRESS_TYPE, "public")
         self._noise_psk = data.get(CONF_NOISE_PSK)
         self._device_name = data.get(CONF_DEVICE_NAME)
         return await self._async_step_user_base()
@@ -310,6 +334,7 @@ class EsphomeFlowHandler(ConfigFlow, domain=DOMAIN):
         # Hostname is format: livingroom.local.
         device_name = discovery_info.hostname.removesuffix(".local.")
 
+        self._connection_type = "tcp"
         self._device_name = device_name
         self._name = discovery_info.properties.get("friendly_name", device_name)
         self._host = discovery_info.host
@@ -357,8 +382,12 @@ class EsphomeFlowHandler(ConfigFlow, domain=DOMAIN):
         if entry.source == SOURCE_IGNORE:
             # Don't call _fetch_device_info() for ignored entries
             raise AbortFlow("already_configured")
+        connection_type = entry.data.get(CONF_CONNECTION_TYPE, "tcp")
         configured_host: str | None = entry.data.get(CONF_HOST)
         configured_port: int = entry.data.get(CONF_PORT, DEFAULT_PORT)
+        configured_ble_address_type: Literal["public", "random"] | None = (
+            entry.data.get(CONF_BLUETOOTH_MAC_ADDRESS_TYPE)
+        )
         # When port is None (from DHCP discovery), only compare hosts
         if configured_host == host and (port is None or configured_port == port):
             # Don't probe to verify the mac is correct since
@@ -370,7 +399,13 @@ class EsphomeFlowHandler(ConfigFlow, domain=DOMAIN):
         if entry.state is ConfigEntryState.LOADED and entry.runtime_data.available:
             raise AbortFlow("already_configured")
         configured_psk: str | None = entry.data.get(CONF_NOISE_PSK)
-        await self._fetch_device_info(host, port or configured_port, configured_psk)
+        await self._fetch_device_info(
+            connection_type,
+            host,
+            port or configured_port,
+            configured_ble_address_type,
+            configured_psk,
+        )
         updates: dict[str, Any] = {}
         if self._device_mac == formatted_mac:
             updates[CONF_HOST] = host
@@ -405,6 +440,35 @@ class EsphomeFlowHandler(ConfigFlow, domain=DOMAIN):
             },
         )
 
+    async def async_step_bluetooth(
+        self, discovery_info: BluetoothServiceInfo
+    ) -> ConfigFlowResult:
+        """Handle the bluetooth discovery step."""
+
+        _LOGGER.debug("Discovered device: %s", discovery_info)
+
+        self.context["title_placeholders"] = {
+            "name": discovery_info.name,
+            "address": discovery_info.address,
+        }
+        mac_address = discovery_info.address
+        self._host = mac_address
+        self._connection_type = "ble"
+        self._name = discovery_info.name
+        if isinstance(discovery_info, BluetoothServiceInfoBleak):
+            self._ble_address_type = discovery_info.device.details["props"][
+                "AddressType"
+            ]
+        else:
+            _LOGGER.warning(
+                "Discovered device is not a BluetoothServiceInfoBleak instance"
+            )
+            self._ble_address_type = "public"
+        # self._noise_required = True
+        await self.async_set_unique_id(mac_address)
+        await self._async_validate_mac_abort_configured(mac_address, mac_address, None)
+        return await self.async_step_discovery_confirm()
+
     async def async_step_mqtt(
         self, discovery_info: MqttServiceInfo
     ) -> ConfigFlowResult:
@@ -430,6 +494,7 @@ class EsphomeFlowHandler(ConfigFlow, domain=DOMAIN):
         device_name = cast(str, device_info["name"])
 
         self._device_name = device_name
+        self._connection_type = "tcp"
         self._name = cast(str, device_info.get("friendly_name", device_name))
         self._host = cast(str, device_info["ip"])
         self._port = cast(int, device_info["port"])
@@ -504,8 +569,10 @@ class EsphomeFlowHandler(ConfigFlow, domain=DOMAIN):
             self._entry_with_name_conflict,
             data={
                 **self._entry_with_name_conflict.data,
+                CONF_CONNECTION_TYPE: self._connection_type,
                 CONF_HOST: self._host,
                 CONF_PORT: self._port or DEFAULT_PORT,
+                CONF_BLUETOOTH_MAC_ADDRESS_TYPE: self._ble_address_type,
                 CONF_PASSWORD: self._password or "",
                 CONF_NOISE_PSK: self._noise_psk or "",
             },
@@ -605,8 +672,10 @@ class EsphomeFlowHandler(ConfigFlow, domain=DOMAIN):
     def _async_make_config_data(self) -> dict[str, Any]:
         """Return config data for the entry."""
         return {
+            CONF_CONNECTION_TYPE: self._connection_type,
             CONF_HOST: self._host,
             CONF_PORT: self._port,
+            CONF_BLUETOOTH_MAC_ADDRESS_TYPE: self._ble_address_type,
             # The API uses protobuf, so empty string denotes absence
             CONF_PASSWORD: self._password or "",
             CONF_NOISE_PSK: self._noise_psk or "",
@@ -658,8 +727,10 @@ class EsphomeFlowHandler(ConfigFlow, domain=DOMAIN):
         assert self._host is not None
         self._abort_unique_id_configured_with_details(
             updates={
+                CONF_CONNECTION_TYPE: self._connection_type,
                 CONF_HOST: self._host,
                 CONF_PORT: self._port,
+                CONF_BLUETOOTH_MAC_ADDRESS_TYPE: self._ble_address_type,
                 CONF_NOISE_PSK: self._noise_psk,
             }
         )
@@ -682,9 +753,11 @@ class EsphomeFlowHandler(ConfigFlow, domain=DOMAIN):
         ):
             self._abort_unique_id_configured_with_details(
                 updates={
+                    CONF_CONNECTION_TYPE: self._connection_type,
                     CONF_HOST: self._host,
                     CONF_PORT: self._port,
                     CONF_NOISE_PSK: self._noise_psk,
+                    CONF_BLUETOOTH_MAC_ADDRESS_TYPE: self._ble_address_type,
                 }
             )
         for entry in self._async_current_entries(include_ignore=False):
@@ -778,16 +851,27 @@ class EsphomeFlowHandler(ConfigFlow, domain=DOMAIN):
         )
 
     async def _fetch_device_info(
-        self, host: str, port: int | None, noise_psk: str | None
+        self,
+        connection_type: Literal["tcp", "ble"],
+        host: str,
+        port: int | None,
+        ble_address_type: Literal["public", "random"] | None,
+        noise_psk: str | None,
     ) -> str | None:
         """Fetch device info from API and return any errors."""
-        zeroconf_instance = await zeroconf.async_get_instance(self.hass)
+        zeroconf_instance = (
+            await zeroconf.async_get_instance(self.hass)
+            if connection_type == "tcp"
+            else None
+        )
         cli = APIClient(
             host,
             port or DEFAULT_PORT,
             self._password or "",
+            connection_type=connection_type,
             zeroconf_instance=zeroconf_instance,
             noise_psk=noise_psk,
+            ble_address_type=ble_address_type,
         )
         try:
             await cli.connect()
@@ -820,9 +904,14 @@ class EsphomeFlowHandler(ConfigFlow, domain=DOMAIN):
     async def fetch_device_info(self) -> str | None:
         """Fetch device info from API and return any errors."""
         assert self._host is not None
-        assert self._port is not None
+        assert self._connection_type is not None
+        assert self._connection_type == "ble" or self._port is not None
         if error := await self._fetch_device_info(
-            self._host, self._port, self._noise_psk
+            self._connection_type,
+            self._host,
+            self._port,
+            self._ble_address_type,
+            self._noise_psk,
         ):
             return error
         assert self._device_info is not None
@@ -831,9 +920,11 @@ class EsphomeFlowHandler(ConfigFlow, domain=DOMAIN):
         if self.source not in (SOURCE_REAUTH, SOURCE_RECONFIGURE):
             self._abort_unique_id_configured_with_details(
                 updates={
+                    CONF_CONNECTION_TYPE: self._connection_type,
                     CONF_HOST: self._host,
                     CONF_PORT: self._port,
                     CONF_NOISE_PSK: self._noise_psk,
+                    CONF_BLUETOOTH_MAC_ADDRESS_TYPE: self._ble_address_type,
                 }
             )
 
@@ -841,15 +932,22 @@ class EsphomeFlowHandler(ConfigFlow, domain=DOMAIN):
 
     async def try_login(self) -> str | None:
         """Try logging in to device and return any errors."""
-        zeroconf_instance = await zeroconf.async_get_instance(self.hass)
+        zeroconf_instance = (
+            await zeroconf.async_get_instance(self.hass)
+            if self._connection_type == "tcp"
+            else None
+        )
+        assert self._connection_type is not None
         assert self._host is not None
-        assert self._port is not None
+        assert self._connection_type == "ble" or self._port is not None
         cli = APIClient(
             self._host,
             self._port,
             self._password,
+            connection_type=self._connection_type,
             zeroconf_instance=zeroconf_instance,
             noise_psk=self._noise_psk,
+            ble_address_type=self._ble_address_type,
         )
 
         try:

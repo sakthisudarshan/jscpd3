@@ -16,8 +16,10 @@ ESPHOME_DATA: HassKey[DomainData] = HassKey(DOMAIN)
 CONF_ALLOW_SERVICE_CALLS = "allow_service_calls"
 CONF_SUBSCRIBE_LOGS = "subscribe_logs"
 CONF_DEVICE_NAME = "device_name"
+CONF_CONNECTION_TYPE = "connection_type"
 CONF_NOISE_PSK = "noise_psk"
 CONF_BLUETOOTH_MAC_ADDRESS = "bluetooth_mac_address"
+CONF_BLUETOOTH_MAC_ADDRESS_TYPE = "bluetooth_mac_address_type"
 
 DEFAULT_ALLOW_SERVICE_CALLS = True
 DEFAULT_NEW_CONFIG_ALLOW_ALLOW_SERVICE_CALLS = False

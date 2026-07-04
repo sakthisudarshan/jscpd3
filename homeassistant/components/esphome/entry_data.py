@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from functools import partial
 import logging
 from operator import delitem
-from typing import TYPE_CHECKING, Any, Final, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, TypedDict, cast
 
 from aioesphomeapi import (
     COMPONENT_TYPE_TO_INFO,
@@ -138,6 +138,7 @@ class RuntimeEntryData:
     entry_id: str
     title: str
     client: APIClient
+    connection_type: Literal["tcp", "ble"]
     store: ESPHomeStorage
     state: defaultdict[type[EntityState], dict[int, EntityState]] = field(
         default_factory=lambda: defaultdict(dict)
@@ -191,6 +192,7 @@ class RuntimeEntryData:
     entity_removal_callbacks: dict[EntityInfoKey, list[CALLBACK_TYPE]] = field(
         default_factory=dict
     )
+    host: str | None = None
 
     @property
     def name(self) -> str:
