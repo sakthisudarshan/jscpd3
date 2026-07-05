@@ -439,7 +439,7 @@ async def test_rpc_lora_update(
         blocking=True,
     )
 
-    assert mock_rpc_device.trigger_ota_update.call_count == 1
+    assert mock_rpc_device.trigger_add_on_ota_update.call_count == 1
 
     assert (state := hass.states.get(entity_id))
     assert state.state == STATE_ON

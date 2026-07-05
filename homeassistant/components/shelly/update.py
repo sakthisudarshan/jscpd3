@@ -7,6 +7,7 @@ from typing import Any, Final, cast, override
 
 from aioshelly.const import RPC_GENERATIONS
 from aioshelly.exceptions import DeviceConnectionError, InvalidAuthError, RpcCallError
+from aioshelly.rpc_device.device import RpcDevice
 from awesomeversion import AwesomeVersion, AwesomeVersionStrategy
 
 from homeassistant.components.update import (
@@ -55,6 +56,9 @@ class RpcUpdateDescription(RpcEntityDescription, UpdateEntityDescription):
     latest_version: Callable[[dict], Any]
     installed_version: Callable[[dict], Any] | None = None
     beta: bool
+    method: Callable[[RpcDevice, bool], Any] = lambda device, beta: (
+        device.trigger_ota_update(beta)
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -111,6 +115,7 @@ RPC_UPDATES: Final = {
         latest_version=lambda status: status.get("stable", {"version": ""})["version"],
         installed_version=lambda status: status.get("fw_version"),
         beta=False,
+        method=lambda device, _: device.trigger_add_on_ota_update(),
         device_class=UpdateDeviceClass.FIRMWARE,
         entity_category=EntityCategory.CONFIG,
     ),
@@ -364,7 +369,7 @@ class RpcUpdateEntity(ShellyRpcAttributeEntity, UpdateEntity):
             new_version,
         )
         try:
-            await self.coordinator.device.trigger_ota_update(beta=beta)
+            await self.entity_description.method(self.coordinator.device, beta)
         except DeviceConnectionError as err:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
