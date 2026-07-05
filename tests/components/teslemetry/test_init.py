@@ -156,6 +156,20 @@ async def test_energy_site_refresh_error(
     assert entry.state is state
 
 
+# Test Metadata Coordinator
+@pytest.mark.parametrize(("side_effect", "state"), ERRORS)
+async def test_metadata_refresh_error(
+    hass: HomeAssistant,
+    mock_metadata: AsyncMock,
+    side_effect: TeslaFleetError,
+    state: ConfigEntryState,
+) -> None:
+    """Test coordinator refresh with an error."""
+    mock_metadata.side_effect = side_effect
+    entry = await setup_platform(hass)
+    assert entry.state is state
+
+
 @pytest.mark.usefixtures("entity_registry_enabled_by_default")
 async def test_vehicle_stream(
     hass: HomeAssistant,
@@ -908,6 +922,7 @@ async def test_live_status_coordinator_refresh_error(
     "side_effect",
     [
         [InvalidToken],
+        [InsufficientCredits],
         [TeslaFleetError],
         [ENERGY_HISTORY, {"response": {}}],
     ],
@@ -1009,9 +1024,6 @@ async def test_dynamic_device_discovery_no_reload_without_changes(
 
     # Verify reload was NOT triggered since no subscription changes
     mock_reload.assert_not_called()
-
-
-# Dead-token / insufficient-credits retry storm regression tests
 
 
 def _oauth_session(hass: HomeAssistant, entry: MockConfigEntry) -> OAuth2Session:
