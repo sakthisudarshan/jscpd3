@@ -447,7 +447,7 @@ async def test_rpc_lora_update(
     assert state.attributes[ATTR_LATEST_VERSION] == "2"
     assert state.attributes[ATTR_IN_PROGRESS] is True
     assert state.attributes[ATTR_UPDATE_PERCENTAGE] is None
-    assert state.attributes[ATTR_RELEASE_URL] == GEN2_RELEASE_URL
+    assert state.attributes[ATTR_RELEASE_URL] is None
 
     inject_rpc_device_event(
         monkeypatch,
