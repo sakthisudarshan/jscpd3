@@ -1,0 +1,497 @@
+"""Tests for the Easywave coordinator."""
+
+from unittest.mock import AsyncMock, MagicMock
+
+from easywave_home_control.codec import (
+    ButtonFunction,
+    ButtonPushEvent,
+    ButtonReleaseEvent,
+    MeasurementType,
+    SensorTelegramEvent,
+)
+from easywave_home_control.codec.common import TimerDuration
+from easywave_home_control.codec.events import EasywaveButton
+from easywave_home_control.codec.sensors import (
+    SensorMeasurementPayload,
+    SensorPayloadFormat,
+)
+import pytest
+
+from homeassistant.components.easywave.const import (
+    DEVICE_SCAN_INTERVAL,
+    DOMAIN,
+    EVENT_TYPE_BUTTON_PRESS,
+    EVENT_TYPE_BUTTON_RELEASE,
+)
+from homeassistant.components.easywave.coordinator import EasywaveCoordinator
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.update_coordinator import UpdateFailed
+
+from .conftest import MOCK_TRANSMITTER_DEVICE_ID, MOCK_TRANSMITTER_SERIAL
+
+from tests.common import MockConfigEntry
+
+
+@pytest.fixture
+def mock_transceiver() -> MagicMock:
+    """Return a mock RX11Transceiver."""
+    transceiver = MagicMock()
+    transceiver.is_connected = True
+    transceiver.device_path = "/dev/ttyACM0"
+    transceiver.usb_serial_number = "12345"
+    transceiver.hw_version = "1.0"
+    transceiver.fw_version = "2.0"
+    transceiver.connect = AsyncMock(return_value=True)
+    transceiver.reconnect = AsyncMock(return_value=True)
+    transceiver.disconnect = AsyncMock()
+    transceiver.dispose = AsyncMock()
+    transceiver.set_disconnect_callback = MagicMock()
+    return transceiver
+
+
+@pytest.fixture
+def mock_entry() -> MockConfigEntry:
+    """Return a mock config entry."""
+    return MockConfigEntry(
+        domain=DOMAIN,
+        title="Easywave Gateway",
+        data={"device_path": "/dev/ttyACM0"},
+    )
+
+
+@pytest.fixture
+def coordinator(
+    hass: HomeAssistant,
+    mock_transceiver: MagicMock,
+    mock_entry: MockConfigEntry,
+) -> EasywaveCoordinator:
+    """Return an EasywaveCoordinator instance."""
+    mock_entry.add_to_hass(hass)
+    return EasywaveCoordinator(hass, mock_transceiver, mock_entry)
+
+
+def test_coordinator_init(
+    coordinator: EasywaveCoordinator,
+    mock_transceiver: MagicMock,
+    mock_entry: MockConfigEntry,
+) -> None:
+    """Test coordinator initialisation."""
+    assert coordinator.transceiver is mock_transceiver
+    assert coordinator.config_entry is mock_entry
+    assert coordinator.name == DOMAIN
+    assert coordinator.update_interval == DEVICE_SCAN_INTERVAL
+    assert coordinator.is_offline is False
+
+
+def test_coordinator_init_offline(
+    hass: HomeAssistant,
+    mock_entry: MockConfigEntry,
+) -> None:
+    """Test coordinator initialises as offline when transceiver not connected."""
+    mock_entry.add_to_hass(hass)
+    transceiver = MagicMock()
+    transceiver.is_connected = False
+    coord = EasywaveCoordinator(hass, transceiver, mock_entry)
+    assert coord.is_offline is True
+
+
+# ── _async_setup ────────────────────────────────────────────────────────────
+
+
+async def test_async_setup_connected(
+    coordinator: EasywaveCoordinator,
+    mock_transceiver: MagicMock,
+) -> None:
+    """Test successful setup when transceiver connects."""
+    await coordinator._async_setup()
+
+    assert coordinator.is_offline is False
+    mock_transceiver.connect.assert_awaited_once()
+    mock_transceiver.set_disconnect_callback.assert_called_once()
+
+
+async def test_async_setup_offline(
+    coordinator: EasywaveCoordinator,
+    mock_transceiver: MagicMock,
+) -> None:
+    """Test setup enters offline mode when transceiver cannot connect."""
+    mock_transceiver.connect = AsyncMock(return_value=False)
+
+    await coordinator._async_setup()
+
+    assert coordinator.is_offline is True
+    mock_transceiver.set_disconnect_callback.assert_not_called()
+
+
+async def test_async_setup_exception(
+    coordinator: EasywaveCoordinator,
+    mock_transceiver: MagicMock,
+) -> None:
+    """Test setup raises UpdateFailed on exception."""
+    mock_transceiver.connect = AsyncMock(side_effect=OSError("port error"))
+
+    with pytest.raises(UpdateFailed):
+        await coordinator._async_setup()
+
+
+# ── disconnect handling ─────────────────────────────────────────────────────
+
+
+async def test_on_transceiver_disconnect(
+    hass: HomeAssistant,
+    coordinator: EasywaveCoordinator,
+) -> None:
+    """Test _on_transceiver_disconnect schedules _handle_disconnect."""
+    coordinator.is_offline = False
+    coordinator._on_transceiver_disconnect()
+    # Allow the call_soon_threadsafe callback to execute
+    await hass.async_block_till_done()
+    assert coordinator.is_offline is True
+
+
+async def test_handle_disconnect_already_offline(
+    coordinator: EasywaveCoordinator,
+) -> None:
+    """Test _handle_disconnect is a no-op when already offline."""
+    coordinator.is_offline = True
+    # Should not raise or change anything
+    coordinator._handle_disconnect()
+    assert coordinator.is_offline is True
+
+
+async def test_handle_disconnect_sets_offline(
+    coordinator: EasywaveCoordinator,
+) -> None:
+    """Test _handle_disconnect marks offline and pushes data."""
+    coordinator.is_offline = False
+    coordinator.async_set_updated_data = MagicMock()
+
+    coordinator._handle_disconnect()
+
+    assert coordinator.is_offline is True
+    coordinator.async_set_updated_data.assert_called_once_with(
+        {
+            "is_connected": False,
+            "device_path": None,
+        }
+    )
+
+
+# ── _async_update_data ──────────────────────────────────────────────────────
+
+
+async def test_update_data_online(
+    coordinator: EasywaveCoordinator,
+    mock_transceiver: MagicMock,
+) -> None:
+    """Test update returns connected data when online."""
+    coordinator.is_offline = False
+
+    data = await coordinator._async_update_data()
+
+    assert data == {
+        "is_connected": True,
+        "device_path": "/dev/ttyACM0",
+    }
+
+
+async def test_update_data_reconnect_success(
+    coordinator: EasywaveCoordinator,
+    mock_transceiver: MagicMock,
+) -> None:
+    """Test update reconnects successfully from offline."""
+    coordinator.is_offline = True
+    mock_transceiver.reconnect = AsyncMock(return_value=True)
+
+    data = await coordinator._async_update_data()
+
+    assert coordinator.is_offline is False
+    mock_transceiver.set_disconnect_callback.assert_called()
+    assert data["is_connected"] is True
+
+
+async def test_update_data_reconnect_fails(
+    coordinator: EasywaveCoordinator,
+    mock_transceiver: MagicMock,
+) -> None:
+    """Test update stays offline when reconnect fails."""
+    coordinator.is_offline = True
+    mock_transceiver.reconnect = AsyncMock(return_value=False)
+
+    data = await coordinator._async_update_data()
+
+    assert coordinator.is_offline is True
+    assert data == {"is_connected": False, "device_path": None}
+
+
+async def test_update_data_detects_lost_connection(
+    coordinator: EasywaveCoordinator,
+    mock_transceiver: MagicMock,
+) -> None:
+    """Test update detects connection loss during poll."""
+    coordinator.is_offline = False
+    mock_transceiver.is_connected = False
+
+    data = await coordinator._async_update_data()
+
+    assert coordinator.is_offline is True
+    assert data == {"is_connected": False, "device_path": None}
+
+
+async def test_update_data_update_failed(
+    coordinator: EasywaveCoordinator,
+    mock_transceiver: MagicMock,
+) -> None:
+    """Test UpdateFailed is re-raised and sets offline."""
+    coordinator.is_offline = True
+    mock_transceiver.reconnect = AsyncMock(side_effect=UpdateFailed("fail"))
+
+    with pytest.raises(UpdateFailed):
+        await coordinator._async_update_data()
+
+    assert coordinator.is_offline is True
+
+
+async def test_update_data_generic_exception(
+    coordinator: EasywaveCoordinator,
+    mock_transceiver: MagicMock,
+) -> None:
+    """Test OS error during reconnect is wrapped in UpdateFailed."""
+    coordinator.is_offline = True
+    mock_transceiver.reconnect = AsyncMock(side_effect=OSError("boom"))
+
+    with pytest.raises(UpdateFailed, match="boom"):
+        await coordinator._async_update_data()
+
+    assert coordinator.is_offline is True
+
+
+# ── telegram listener ───────────────────────────────────────────────────────
+
+
+async def test_telegram_listener_restarts_after_loop_exit(
+    hass: HomeAssistant,
+    coordinator: EasywaveCoordinator,
+) -> None:
+    """A finished listener task must not block future starts."""
+    entity = MagicMock()
+    coordinator._sensor_entities.append(entity)
+    coordinator.is_offline = False
+
+    coordinator._start_telegram_listener()
+    first_task = coordinator._listener_task
+    assert first_task is not None
+
+    await coordinator._clear_listener_task()
+    assert coordinator._listener_task is None
+
+    coordinator._start_telegram_listener()
+    assert coordinator._listener_task is not None
+    assert coordinator._listener_task is not first_task
+
+
+async def test_dispatch_sensor_telegram_updates_matching_entity(
+    coordinator: EasywaveCoordinator,
+) -> None:
+    """Sensor measurements are routed to the matching entity."""
+    entity = MagicMock()
+    entity.sensor_serial = "aa" * 32
+    coordinator._sensor_entities.append(entity)
+
+    payload = SensorMeasurementPayload(
+        version=0,
+        has_battery=True,
+        battery_level=7,
+        wire_measurement_type=5,
+        measurement_type=MeasurementType.TEMPERATURE,
+        payload_format=SensorPayloadFormat.NEO,
+        should_ignore=False,
+        has_reference=False,
+        raw_value=2630,
+        reference_value=0,
+        max_interval=TimerDuration(mantissa=0, exponent=0, factor_minutes=15.0),
+    )
+    event = SensorTelegramEvent(
+        sensor_serial=bytes.fromhex(entity.sensor_serial),
+        payload=payload,
+    )
+
+    coordinator._dispatch_sensor_telegram(event)
+
+    entity.handle_telegram.assert_called_once_with(event)
+
+
+async def test_dispatch_sensor_telegram_updates_flagged_payload(
+    coordinator: EasywaveCoordinator,
+) -> None:
+    """Measurements with should_ignore still update sensor entities."""
+    entity = MagicMock()
+    entity.sensor_serial = "bb" * 32
+    coordinator._sensor_entities.append(entity)
+
+    payload = SensorMeasurementPayload(
+        version=0,
+        has_battery=True,
+        battery_level=7,
+        wire_measurement_type=5,
+        measurement_type=MeasurementType.TEMPERATURE,
+        payload_format=SensorPayloadFormat.NEO,
+        should_ignore=True,
+        has_reference=False,
+        raw_value=2630,
+        reference_value=0,
+        max_interval=TimerDuration(mantissa=0, exponent=0, factor_minutes=15.0),
+    )
+    event = SensorTelegramEvent(
+        sensor_serial=bytes.fromhex(entity.sensor_serial),
+        payload=payload,
+    )
+
+    coordinator._dispatch_sensor_telegram(event)
+
+    entity.handle_telegram.assert_called_once_with(event)
+
+
+async def test_dispatch_sensor_telegram_matches_serial_case_insensitively(
+    coordinator: EasywaveCoordinator,
+) -> None:
+    """Configured sensor serials match regardless of hex case."""
+    entity = MagicMock()
+    entity.sensor_serial = ("AA" * 16).upper()
+    coordinator._sensor_entities.append(entity)
+
+    payload = SensorMeasurementPayload(
+        version=0,
+        has_battery=True,
+        battery_level=7,
+        wire_measurement_type=5,
+        measurement_type=MeasurementType.TEMPERATURE,
+        payload_format=SensorPayloadFormat.NEO,
+        should_ignore=False,
+        has_reference=False,
+        raw_value=2630,
+        reference_value=0,
+        max_interval=TimerDuration(mantissa=0, exponent=0, factor_minutes=15.0),
+    )
+    event = SensorTelegramEvent(
+        sensor_serial=bytes.fromhex(entity.sensor_serial.lower()),
+        payload=payload,
+    )
+
+    coordinator._dispatch_sensor_telegram(event)
+
+    entity.handle_telegram.assert_called_once_with(event)
+
+
+async def test_async_shutdown(
+    coordinator: EasywaveCoordinator,
+    mock_transceiver: MagicMock,
+) -> None:
+    """Test clean shutdown disposes transceiver."""
+    await coordinator.async_shutdown()
+
+    mock_transceiver.dispose.assert_awaited_once()
+
+
+async def test_async_shutdown_error(
+    coordinator: EasywaveCoordinator,
+    mock_transceiver: MagicMock,
+) -> None:
+    """Test shutdown handles errors gracefully."""
+    mock_transceiver.dispose = AsyncMock(side_effect=OSError("port busy"))
+
+    # Should not raise
+    await coordinator.async_shutdown()
+
+    mock_transceiver.dispose.assert_awaited_once()
+
+
+def _make_transmitter_entity() -> MagicMock:
+    """Return a mock transmitter entity registered on the coordinator."""
+    entity = MagicMock()
+    entity.transmitter_serial = MOCK_TRANSMITTER_SERIAL
+    entity.device_id = MOCK_TRANSMITTER_DEVICE_ID
+    return entity
+
+
+def test_dispatch_button_push_fires_device_event(
+    coordinator: EasywaveCoordinator,
+) -> None:
+    """Button push telegrams fire a device automation event for known transmitters."""
+    coordinator.fire_device_event = MagicMock()
+    entity = _make_transmitter_entity()
+    coordinator.register_transmitter_entities([entity])
+    event = ButtonPushEvent(
+        transmitter_serial=bytes.fromhex(MOCK_TRANSMITTER_SERIAL),
+        button=EasywaveButton.A,
+        function=ButtonFunction.DEFAULT,
+        should_ignore=False,
+    )
+
+    coordinator._dispatch_button_push(event)
+
+    entity.handle_telegram.assert_called_once_with(event)
+    entity.handle_battery_status.assert_called_once_with(False)
+    coordinator.fire_device_event.assert_called_once_with(
+        MOCK_TRANSMITTER_DEVICE_ID,
+        EVENT_TYPE_BUTTON_PRESS,
+        subtype="a",
+    )
+
+
+def test_dispatch_button_push_skips_low_battery_event(
+    coordinator: EasywaveCoordinator,
+) -> None:
+    """Low-battery telegrams update entities but do not fire button press triggers."""
+    coordinator.fire_device_event = MagicMock()
+    entity = _make_transmitter_entity()
+    coordinator.register_transmitter_entities([entity])
+    event = ButtonPushEvent(
+        transmitter_serial=bytes.fromhex(MOCK_TRANSMITTER_SERIAL),
+        button=EasywaveButton.A,
+        function=ButtonFunction.LOW_BATTERY,
+        should_ignore=False,
+    )
+
+    coordinator._dispatch_button_push(event)
+
+    entity.handle_battery_status.assert_called_once_with(True)
+    coordinator.fire_device_event.assert_not_called()
+
+
+def test_dispatch_button_push_ignores_unknown_transmitter(
+    coordinator: EasywaveCoordinator,
+) -> None:
+    """Button push telegrams from unknown transmitters are ignored."""
+    coordinator.fire_device_event = MagicMock()
+    event = ButtonPushEvent(
+        transmitter_serial=bytes.fromhex("cc" * 16),
+        button=EasywaveButton.B,
+        function=ButtonFunction.DEFAULT,
+        should_ignore=False,
+    )
+
+    coordinator._dispatch_button_push(event)
+
+    coordinator.fire_device_event.assert_not_called()
+
+
+def test_dispatch_button_release_fires_device_event(
+    coordinator: EasywaveCoordinator,
+) -> None:
+    """Button release telegrams fire a device automation event."""
+    coordinator.fire_device_event = MagicMock()
+    entity = _make_transmitter_entity()
+    coordinator.register_transmitter_entities([entity])
+    event = ButtonReleaseEvent(
+        transmitter_serial=bytes.fromhex(MOCK_TRANSMITTER_SERIAL),
+    )
+
+    coordinator._dispatch_button_release(event)
+
+    entity.handle_telegram.assert_called_once_with(event)
+    coordinator.fire_device_event.assert_called_once_with(
+        MOCK_TRANSMITTER_DEVICE_ID,
+        EVENT_TYPE_BUTTON_RELEASE,
+        subtype="released",
+    )
