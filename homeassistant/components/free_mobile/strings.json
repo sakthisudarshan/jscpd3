@@ -1,0 +1,53 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "[%key:common::config_flow::abort::already_configured_service%]",
+      "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]",
+      "reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]"
+    },
+    "step": {
+      "reauth_confirm": {
+        "data": {
+          "access_token": "[%key:common::config_flow::data::access_token%]"
+        },
+        "data_description": {
+          "access_token": "[%key:component::free_mobile::config::step::user::data_description::access_token%]"
+        },
+        "title": "Reauthenticate Free Mobile"
+      },
+      "reconfigure": {
+        "data": {
+          "access_token": "[%key:common::config_flow::data::access_token%]"
+        },
+        "data_description": {
+          "access_token": "[%key:component::free_mobile::config::step::user::data_description::access_token%]"
+        },
+        "title": "Reconfigure Free Mobile"
+      },
+      "user": {
+        "data": {
+          "access_token": "[%key:common::config_flow::data::access_token%]",
+          "username": "[%key:common::config_flow::data::username%]"
+        },
+        "data_description": {
+          "access_token": "You can get this token by activating the SMS API in your online account.",
+          "username": "This is the ID given by Free Mobile to access your online account."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "invalid_auth": {
+      "message": "Wrong username or access token."
+    },
+    "missing_parameter": {
+      "message": "At least one parameter is missing."
+    },
+    "rate_limit_exceeded": {
+      "message": "Too many SMS sent in a short time."
+    },
+    "server_error": {
+      "message": "Free Mobile server error, try again later."
+    }
+  }
+}
